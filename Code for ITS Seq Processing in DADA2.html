@@ -1,1 +1,464 @@
 
+# R code modified from the dada2 pipeline to fit ITS data generated from two sequencing runs 150X150 for a project with Dr. Surinder Chopra
+# the ITS seqs prepared by the Wright lab had a large amount of seqs that had low complexity (many repetitive seqs)
+# seqs had to be pre-filtered using fastP- using the following commands
+# conda install -c bioconda fastp
+# fastp -y low_complexity_filter -i RI-4_S4_R1_001.fastq -I RI-4_S4_R2_001.fastq -o RI4_R1_001.fastq -O RI4_R2_001.fastq
+# Resulting in the removal of low complexity reads
+
+source("https://bioconductor.org/biocLite.R")
+#BiocManager::install("dada2")
+#BiocManager::install("ShortRead")
+#BiocManager::install("Biostrings")
+#BiocManager::install("phyloseq")
+#BiocManager::install("microbiome")
+#BiocManager::install("Deseq2")
+#BiocManager::install("biomformat")
+
+library(dada2)
+library(ShortRead)
+library(Biostrings)
+library(phyloseq)
+library(microbiome)
+library(DESeq2)
+library(biomformat)
+
+
+# Set Working Directory for Sequence Set I ####
+setwd("~/Downloads/Surinders_ITS-seqs/SetI/ITS_Sample_Set_I/QualityFiltered")
+path<- setwd("~/Downloads/Surinders_ITS-seqs/SetI/ITS_Sample_Set_I/QualityFiltered")
+
+list.files(path)
+
+
+# First we read in the names of the fastq files, and perform some string manipulation to get lists of the 
+# forward and reverse fastq files in matched order
+
+
+####DELETE .GZ FILES!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+#### 2. Sort the forward and reverse reads #####
+# Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+fnFs <- sort(list.files(path, pattern="_R1_001.fastq", full.names = TRUE))
+#You should see in your global env, fnFs chr[1:20] "and the path directory"
+fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
+#this is depedent on how you samples are named
+
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+sample.names
+#should see a list of the sample names
+
+
+
+
+##### 3. Examine the quality profiles ####
+
+## forward reads ##
+
+# plot A in the Dada2 Outputs  # 
+quartz()
+#jpeg(file="ForwardRead_QualityProfile.jpeg", width=10, height=8, units="in", res=800)
+plotQualityProfile(fnFs[1:4])
+#dev.off()
+## reverse reads ##
+# plot B in the Dada2 Outputs  # 
+quartz()
+#jpeg(file="ReverseRead_QualityProfile.jpeg", width=10, height=8, units="in", res=800)
+plotQualityProfile(fnRs[1:4])
+#dev.off()
+
+#Check complexities of the forward and reverse reads
+cmp1 <- seqComplexity(getSequences(filtFs[[1]])); 
+#jpeg(file="Forward_cmp1.jpeg", width=10, height=8, units="in", res=800)
+plot(cmp1)
+#dev.off()
+
+cmpR <- seqComplexity(getSequences(filtRs[[1]]))
+#jpeg(file="Reverse_cmp1.jpeg", width=10, height=8, units="in", res=800)
+plot(cmpR)
+#dev.off()
+
+#### 4. Assign Filtering samples ####
+# Assign the filenames for the filtered fastq.gz files
+
+# Place filtered files in filtered/ subdirectory
+filt_path <- file.path(path, "filtered") #you should see this in your global environment
+filtFs <- file.path(filt_path, paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(filt_path, paste0(sample.names, "_R_filt.fastq.gz"))
+
+# Filter forward and reverse reads
+# On Windows set multithread=FALSE
+
+#the commands included in this filter and trim are dependent on your specific data- especially the truncLen- because you want to trim your seqs based on the quality profiles you generated- quality scores of 30 + are good
+#so you should choose the trunclen to reflect the quality scores of your data but you can't cut too much because you need the forward and reverse reads to overlap when you merge them later
+
+out.new <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(120,120),
+                         maxN=0, maxEE=c(3,3), truncQ=2, rm.phix=TRUE,
+                         compress=TRUE, multithread=TRUE) 
+
+#set multithread to FALSE if using windows
+#this step takes awhile to perform
+
+#you may need to play around with the parameters, specifically the minLen but depends on your data
+
+
+head(out.new) #you shoould see an abbreviated list of your samples, how many reads were used in the filter and trim command and how many reads were removed after the command
+#if you see that a lot of your reads were removed, you may need to be less conservative in the filterandTrim command
+#for example, this command removed ~ 10% of my sequences
+
+
+
+#### 5. Train Dada2 to assess errors ####
+## The program has to estimate the sequencing error rate, to try and distinguish errors from true Exact Sequence Variants
+
+errF <- learnErrors(filtFs, multithread=TRUE)
+
+errR <- learnErrors(filtRs, multithread=TRUE)
+
+derepFastq(filtFs, verbose=TRUE) 
+derepFastq(filtRs, verbose=TRUE)
+
+## Visualize errors
+
+quartz()
+plotErrors(errF, nominalQ=TRUE)
+
+
+
+
+#### 6. Dereplicate the filtered fastq files ####
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+#you should see "encountered XXXX unique sequences from XXX total sequences read
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+
+# Name the derep-class objects by the sample names
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+
+
+
+#### 7. Infer the sequence variants in each sample #####
+# This command goes through every sequence in your sample to determine if it is a unique sequence or if it exactly matches another sequencce
+
+dadaFs <- dada(derepFs, err=errF, multithread=TRUE)
+dadaRs <- dada(derepRs, err=errR, multithread=TRUE)
+
+# Inspecting the dada-class object returned by dada:#
+# In other words, how many real sequence variants do you have? #
+
+dadaFs[[1]]
+# output says "XXX sequence variants were inferred from XXXX input unique sequences"
+# the difference in these values is the number of sequences that were removed because they were likely to include sequencing errors 
+dadaRs[[1]]
+
+
+#### 8.  Merge the denoised forward and reverse reads: ####
+
+mergers.setII <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE)
+
+# Inspect the merger data.frame from the first sample
+head(mergers[[1]])
+#You should see an "abundance", "forward", "reverse", "nmismatch", "nindel", "prefer" and "accept" column
+#nmatch tells you how many base pairs overlapped between the forward and reverse reads- you want this number to be fairly high (50, 100) 
+#you should see 0's in all the rows under "nmismatch" and "nindels"
+
+
+#We can now construct a sequence table of our samples, a #
+#higher-resolution version of the ESV table produced by traditional methods.#
+
+seqtab <- makeSequenceTable(mergers)
+#you will get a message "The sequences being tabled vary in length" but ignore
+
+dim(seqtab)
+#there are two values here, the first value tells you how many samples you have, which should be 20 for our samples, and the second number tells you how many ESVs you have
+
+# Inspect distribution of sequence lengths
+
+table(nchar(getSequences(seqtab)))
+#you will see how variable the length of your sequences are and you'll have to decide how many different lengths you're willing to include
+
+
+#remove sequences less than 250 and greater than 256
+seqtab.new <- seqtab[,nchar(colnames(seqtab)) %in% seq(188,197)] #this removes sequences shorter than 250 or longer than 256
+
+#export table 
+saveRDS(seqtab.new, "~/Downloads/Surinders_ITS-seqs/SetI/seqtab-setI.rds")
+
+# save workspace and then clear workspace
+
+# read in sequence table from second set
+seqtab.new <- readRDS("~/Downloads/Surinders_ITS-seqs/SetI/seqtab-setI.rds")
+
+#### 1. set working directory for sequences from set II ####
+setwd("~/Downloads/Surinders_ITS-seqs/SetII/ITS-Sample-Set-II/Pre-filtered")
+path<- setwd("~/Downloads/Surinders_ITS-seqs/SetII/ITS-Sample-Set-II/Pre-filtered")
+
+list.files(path)
+
+
+# First we read in the names of the fastq files, and perform some string manipulation to get lists of the 
+# forward and reverse fastq files in matched order
+
+
+####DELETE .GZ FILES!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+#### 2. Sort the forward and reverse reads #####
+# Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+fnFs <- sort(list.files(path, pattern="_R1_001.fastq", full.names = TRUE))
+#You should see in your global env, fnFs chr[1:20] "and the path directory"
+fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
+#this is depedent on how you samples are named
+
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+sample.names
+#should see a list of the sample names
+
+
+
+
+##### 3. Examine the quality profiles ####
+
+## forward reads ##
+
+# plot A in the Dada2 Outputs  # 
+quartz()
+#jpeg(file="ForwardRead_QualityProfile.jpeg", width=10, height=8, units="in", res=800)
+plotQualityProfile(fnFs[1:4])
+#dev.off()
+## reverse reads ##
+# plot B in the Dada2 Outputs  # 
+quartz()
+#jpeg(file="ReverseRead_QualityProfile.jpeg", width=10, height=8, units="in", res=800)
+plotQualityProfile(fnRs[1:4])
+#dev.off()
+
+#Check complexities of the forward and reverse reads
+cmp1 <- seqComplexity(getSequences(filtFs[[1]])); 
+#jpeg(file="Forward_cmp1.jpeg", width=10, height=8, units="in", res=800)
+plot(cmp1)
+#dev.off()
+
+cmpR <- seqComplexity(getSequences(filtRs[[1]]))
+#jpeg(file="Reverse_cmp1.jpeg", width=10, height=8, units="in", res=800)
+plot(cmpR)
+#dev.off()
+
+#### 4. Assign Filtering samples ####
+# Assign the filenames for the filtered fastq.gz files
+
+# Place filtered files in filtered/ subdirectory
+filt_path <- file.path(path, "filtered") #you should see this in your global environment
+filtFs <- file.path(filt_path, paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(filt_path, paste0(sample.names, "_R_filt.fastq.gz"))
+
+# Filter forward and reverse reads
+# On Windows set multithread=FALSE
+
+#the commands included in this filter and trim are dependent on your specific data- especially the truncLen- because you want to trim your seqs based on the quality profiles you generated- quality scores of 30 + are good
+#so you should choose the trunclen to reflect the quality scores of your data but you can't cut too much because you need the forward and reverse reads to overlap when you merge them later
+
+out.its.setII <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(120,120),
+                               maxN=0, maxEE=c(3,3), truncQ=2, rm.phix=TRUE,
+                               compress=TRUE, multithread=TRUE) 
+
+#set multithread to FALSE if using windows
+#this step takes awhile to perform
+
+#you may need to play around with the parameters, specifically the minLen but depends on your data
+
+
+head(out.its.setII) #you shoould see an abbreviated list of your samples, how many reads were used in the filter and trim command and how many reads were removed after the command
+#if you see that a lot of your reads were removed, you may need to be less conservative in the filterandTrim command
+
+
+#### 5. Train Dada2 to assess errors ####
+## The program has to estimate the sequencing error rate, to try and distinguish errors from true Exact Sequence Variants
+
+errF <- learnErrors(filtFs, multithread=TRUE)
+
+errR <- learnErrors(filtRs, multithread=TRUE)
+
+derepFastq(filtFs, verbose=TRUE) 
+derepFastq(filtRs, verbose=TRUE)
+## Visualize errors
+
+quartz()
+plotErrors(errF, nominalQ=TRUE)
+
+
+
+
+#### 6. Dereplicate the filtered fastq files ####
+derepFs.setII <- derepFastq(filtFs, verbose=TRUE)
+#you should see "encountered XXXX unique sequences from XXX total sequences read
+derepRs.setII <- derepFastq(filtRs, verbose=TRUE)
+
+# Name the derep-class objects by the sample names
+names(derepFs.setII) <- sample.names
+names(derepRs.setII) <- sample.names
+
+
+
+#### 7. Infer the sequence variants in each sample #####
+# This command goes through every sequence in your sample to determine if it is a unique sequence or if it exactly matches another sequencce
+
+dadaFs.setII <- dada(derepFs.setII, err=errF, multithread=TRUE)
+dadaRs.setII <- dada(derepRs.setII, err=errR, multithread=TRUE)
+
+# Inspecting the dada-class object returned by dada:#
+# In other words, how many real sequence variants do you have? #
+
+dadaFs.setII[[1]]
+# output says "XXX sequence variants were inferred from XXXX input unique sequences"
+# the difference in these values is the number of sequences that were removed because they were likely to include sequencing errors 
+dadaRs.setII[[1]]
+
+
+#### 8.  Merge the denoised forward and reverse reads: ####
+
+mergers.setII <- mergePairs(dadaFs.setII, derepFs.setII, dadaRs.setII, derepRs.setII, verbose=TRUE)
+
+# Inspect the merger data.frame from the first sample
+head(mergers.setII[[1]])
+#You should see an "abundance", "forward", "reverse", "nmismatch", "nindel", "prefer" and "accept" column
+#nmatch tells you how many base pairs overlapped between the forward and reverse reads- you want this number to be fairly high (50, 100) 
+#you should see 0's in all the rows under "nmismatch" and "nindels"
+
+
+#We can now construct a sequence table of our samples, a #
+#higher-resolution version of the ESV table produced by traditional methods.#
+
+seqtab.setII <- makeSequenceTable(mergers.setII)
+#you will get a message "The sequences being tabled vary in length" but ignore
+
+dim(seqtab.setII)
+#there are two values here, the first value tells you how many samples you have, which should be 20 for our samples, and the second number tells you how many ESVs you have
+
+# Inspect distribution of sequence lengths
+
+table(nchar(getSequences(seqtab.setII)))
+#you will see how variable the length of your sequences are and you'll have to decide how many different lengths you're willing to include
+
+
+#remove sequences less than less than 188 and greater than 197
+seqtab2.setII <- seqtab.setII[,nchar(colnames(seqtab.setII)) %in% seq(188,197)] #this removes sequences shorter than 250 or longer than 256
+
+#export table 
+saveRDS(seqtab2.setII, "~/Downloads/Surinders_ITS-seqs/SetII/ITS-Sample-Set-II/Pre-filtered/seqtab-setII.rds")
+
+
+# read in sequence table from second set
+seqtab2.setII <- readRDS("~/Downloads/Surinders_ITS-seqs/SetII/ITS-Sample-Set-II/Pre-filtered/seqtab-setII.rds")
+
+
+# now combine sequence tables from both sequencing runs
+seqtab.full <- mergeSequenceTables(seqtab.new, seqtab2.setII)
+#### 9.  Remove chimeric sequences ####
+
+seqtab.nochim.full <- removeBimeraDenovo(seqtab.full, method="consensus", multithread=TRUE, verbose=TRUE)
+#should get an output that says "Identified XXX bimeras out of XXX input seqs"
+#so it filtered out the bimeras (chimeras) from the table
+
+dim(seqtab.nochim.full)
+#So, this is saying that there are 20 samples and a total of 1,363 ESVs after chimeric filtering
+
+# Percent of sequences that are non-chimeric
+## This differs from number of sequence variants removed, which may be high
+sum(seqtab.nochim.full)/sum(seqtab.full)
+#80.9% non chimeric
+#this value should be fairly high- but will be lower for ITS- maybe like 60 or 70
+
+getN <- function(x) sum(getUniques(x))
+
+
+#### 10. Combine sequence reductions by sample from each step #####
+track <- cbind(rowSums(seqtab.full), rowSums(seqtab.nochim.full))
+
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("tabled", "nonchim")
+rownames(track) <- sample.names
+head(track)
+#this displays how many sequences you started with in each sample, how many were filtered by the filterAndTrim command, how many were merged, and how many were non-chimeric
+#check to see how many samples were removed with each of the steps- if a majority of seqs were removed at any one step, revisit and adjust
+
+
+# Show sequence reductions throughout pipeline
+track
+
+
+
+#### 11. Assign taxonomy ####
+
+# taxonomy assigned using the UNITE database
+# go to the Unite website https://unite.ut.ee/repository.php and the "General FASTA Release" and download the most recent file 
+
+unite.ref<- "~/Downloads/Unite/sh_general_release_dynamic_01.12.2017.fasta"
+
+taxa<- assignTaxonomy(seqtab.nochim.full, unite.ref, multithread = TRUE, tryRC = TRUE)
+
+# check your taxonomic classifications #
+taxa.print<- taxa
+rownames(taxa.print)
+head(taxa.print)
+
+
+#### 12. Format data for analysis ####
+
+# Duplicate your final ESV table #
+seqtab.nochim.full.mod<-seqtab.nochim.full
+
+## Replace column names for ESV table with ESV numbers 
+ncol(seqtab.nochim.full.mod)
+fin.ESV.names<-paste("ESV",sep = "",rep(1:ncol(seqtab.nochim.full.mod)))
+
+colnames(seqtab.nochim.full.mod)<-fin.ESV.names
+
+## Add ESV names to Taxonomy table and then write to file ##
+
+taxa.mod<-cbind(taxa, fin.ESV.names)
+
+df<-rownames_to_column(as.data.frame(taxa.mod), var="sequence")
+
+esv.table<-otu_table(seqtab.nochim.full.mod, taxa_are_rows=FALSE)
+
+fin.ESV.names<-colnames(esv.table)
+
+#Now I need to add the ESV numbers to the taxa table using the following:
+df.esv<-as.data.frame(fin.ESV.names)
+
+taxa.evs<-cbind(df, df.esv)
+#The above added the esv numbers to the data frame but only in a column so I used the following to make that ESV column into the rows
+
+taxa.evs.final<-column_to_rownames(taxa.evs, var="fin.ESV.names")
+
+tax.evs.final.mat<-as.matrix(taxa.evs.final)
+tax.evs.final.table<-tax_table(tax.evs.final.mat)
+head(taxa_names(tax.evs.final.table))
+
+#Now export the taxonomy table for records
+write.table(taxa.evs.final, file = "ESV_Taxonomy_ITS_BothSets.txt")
+
+# Write ESV table to file
+write.table(seqtab.nochim.full.mod, file="ESV_Abund_Table_ITS_BothSets.txt")
+
+
+#now we need to import our mapping file or sometimes referred to as our metadata
+Map<-import_qiime_sample_data("~/Desktop/Surinders_ITS-seqs/Sorghum_FullMap-forFungi.txt")
+
+Map.1<-read.table("~/Desktop/Surinders_ITS-seqs/Sorghum_FullMap-forFungi.txt", row.names=1, header=T)
+
+esv.table<-otu_table(seqtab.nochim.full.mod, taxa_are_rows=FALSE)
+
+#Now we can make the phyloseq object
+ps <- phyloseq(esv.table, tax.evs.final.table, Map)
+
+
+# Now, let's make sure that the correct information is included in our phyloseq object
+
+summary(ps@otu_table) # Should include ESV info
+ps@tax_table # Should include taxonomic info
+ps@sam_data # Should reflect the mapping file that we imported
