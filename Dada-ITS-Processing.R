@@ -170,7 +170,7 @@ colnames(track) <- c("tabled", "nonchim")
 head(track)
 track
 
-#### 11. Assign taxonomy ####
+#### 10. Assign taxonomy ####
 
 # taxonomy assigned using the UNITE database
 # go to the Unite website https://unite.ut.ee/repository.php and the "General FASTA Release" and download the most recent file 
@@ -184,7 +184,7 @@ taxa.print<- taxa
 rownames(taxa.print)
 head(taxa.print)
 
-#### 12. Format data for analysis ####
+#### 11. Format data for analysis ####
 
 #now we need to import our mapping file or sometimes referred to as our metadata
 Map<-import_qiime_sample_data("DirectorytoFungalMappingFile.txt")
@@ -200,3 +200,17 @@ names(dna) <- taxa_names(ps)
 ps <- merge_phyloseq(ps, dna)
 taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
 ps
+
+#### 12. general processing and analysis using silva phyloseq object####
+##### First thing we do is count the number of seqs per sample and remove samples with low read counts
+sample_sums(ps)
+#there are two samples with 0 reads, let's remove them by setting a low sequence count threshold
+ps.pruned <- prune_samples(sample_sums(ps)>=2000, ps)
+sample_sums(ps.pruned)
+
+
+ps.pruned = subset_taxa(ps.pruned, Kingdom =="k__Fungi")
+
+# Since we removed two samples from the phyloseq object, we need to create a new mapping file
+Map.1 <- data.frame(sample_data(ps.pruned))
+
