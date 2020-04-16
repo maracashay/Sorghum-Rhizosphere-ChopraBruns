@@ -113,11 +113,10 @@ dim(seqtab.nochim)
 
 sum(seqtab.nochim)/sum(seqtab.full)
 
+
 ####10. Make phylogenetic tree ####
 #Now, we can make a phylogenetic tree####
 #based on paper by Callahan et al Bioconductor workflow for microbiome data analysis: from raw reads to community analyses
-colnames(taxa.new) <- c("Kindgom", "Phylum", "phyla", "class", "Famiy", "Genus", "Species")
-
 
 seqs<- getSequences(seqtab.nochim)
 
