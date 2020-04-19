@@ -214,3 +214,7 @@ ps.pruned = subset_taxa(ps.pruned, Kingdom =="k__Fungi")
 # Since we removed two samples from the phyloseq object, we need to create a new mapping file
 Map.1 <- data.frame(sample_data(ps.pruned))
 
+#### Rarefy dataset for Alpha-diversity analyses ####
+ordered(sampleSums(ps.pruned)) 
+set.seed(500)
+ps.rare<-rarefy_even_depth(ps, sample_size = 38700)
