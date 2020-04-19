@@ -164,3 +164,8 @@ ps
 
 ##### Remove non bacteria/archaeal taxa ####
 ps = subset_taxa(ps, Kingdom %in% c("Archaea", "Bacteria"))
+
+#### Rarefy dataset for Alpha-diversity analyses ####
+ordered(sampleSums(ps.pruned)) 
+set.seed(500)
+ps.rare<-rarefy_even_depth(ps, sample_size = 20000)
